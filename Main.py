@@ -7,6 +7,8 @@ from threading import Thread
 import time
 import datetime
 import pandas as pd
+import io
+
 
 #global variables
 IDX = 0  #declare this globally so all functions are using the same frame index
@@ -36,13 +38,14 @@ class Rules_Engine:
 
 
 class Main_Work_Flow:
-    def __init__(self, vid_or_cam: list[str] = ["/Users/tobieabel/Desktop/Fighting and Falling 1.mov"], models: list[str] = ['yolov8s_class_custom.pt','yolov8s.pt'],
+    def __init__(self, vid_or_cam: list[str] = ["/Users/tobieabel/Desktop/Fighting and Falling 2.mov"], models: list[str] = ['yolov8s_class_custom.pt','yolov8s.pt'],
                  zones: list[np.ndarray] = [np.array([[640, 154],[0, 242],[0, 360],[640, 360]])]):
         self.vid_or_cam = vid_or_cam
         self.cam_or_vid_dict = {}  # Create a dictionary to hold each camera or video source
-        for i in self.vid_or_cam:
+        for count, i in enumerate(self.vid_or_cam):
             self.cam_or_vid_dict[i] = cv2.VideoCapture(i) # create VideoCapture object for each video or camera in the list passed into the Main_Work_Flow class
-            amount_of_frames = self.cam_or_vid_dict[i].get(cv2.CAP_PROP_FRAME_COUNT) #get the number of frames for videos so you know how many IDX will go up to
+            self.cam_or_vid_dict[i].open(self.vid_or_cam[count])
+            #amount_of_frames = self.cam_or_vid_dict[i].get(cv2.CAP_PROP_FRAME_COUNT) #get the number of frames for videos so you know how many IDX will go up to
         time.sleep(1)  # allow cameras to initialise
 
         self.models = models
@@ -57,17 +60,21 @@ class Main_Work_Flow:
 
         self.obj_det_rule = Rules_Engine(maximum = 10, threshold = 5)
         self.class_rule = Rules_Engine(maximum=5, threshold=4)
-    def Create_Frames(self) -> np.ndarray:#need to put this in seperate threads and use video generator to speed things up
+
+
+    def Create_Frames(self) -> np.ndarray:#need to put this in separate threads and use video generator to speed things up
         #if there are multiple videos or cameras, are you capturing frames from each and sending each to the same model?
         global IDX
         for vid in self.cam_or_vid_dict.values():#loop through the videocapture objects
-            vid.set(1,IDX)
+            #vid.set(1,IDX) # this is for when we have pause function, need session state, and move it out of loop as it adds a lot of processing time
             ret, frame  = vid.read()#read the next frame
+            frame = cv2.resize(frame, (640, 480))  # resize the images to speed up processing - remember to train images at same size
             self.frame_dict[IDX] = frame #add frame to the dict of frames to use for creating videos of incidents, with IDX as the key
         if len(self.frame_dict) > 200: #if frame_dict dict has more than 200 frames, remove the first one
             self.frame_dict.pop(min(self.frame_dict))
 
         return frame
+
 
     def Run_Models(self,frame:np.ndarray) ->sv.detection:
         obj_det_result = self.object_det_model.predict(frame, device = "mps", verbose = False, conf=0.4,iou=0.7)[0]#send every frame to YOLO model
@@ -131,31 +138,29 @@ class Main_Work_Flow:
 
     def Create_Outputs(self, frame: np.ndarray, result: sv.Detections, class_results: sv.Detections, Incident:bool)-> tuple:
         annotated_frame = frame.copy()
-        #if class_results: #write classification results on frame# commenting this out as its not useful info
-        #    annotated_frame = class_results[0].plot() #need to plot classification results ahead of the obj detection results for some reason, otherwise annotations don't render correctly
-        if result: #draw boxes and tracker on frame
+
+        if result:  # draw boxes and tracker on frame
             labels = [f"#{tracker_id}" for tracker_id in result.tracker_id]
-            annotated_frame = self.box_annotator.annotate(annotated_frame, result,labels=labels)
+            annotated_frame = self.box_annotator.annotate(annotated_frame, result, labels=labels)
             annotated_frame = self.trace_annotator.annotate(annotated_frame, result)
 
-        if Timer_Reset > 0: #if there is an incident currently being reported
+        if Timer_Reset > 0:  # if there is an incident currently being reported
             annotated_frame = cv2.copyMakeBorder(annotated_frame, top=15, bottom=15, left=15, right=15,
-                                             borderType=cv2.BORDER_CONSTANT, value=[0, 0, 255])
+                                                 borderType=cv2.BORDER_CONSTANT, value=[0, 0, 255])
             annotated_frame = sv.draw_text(scene=annotated_frame, text=("Incident Detected"),
                                            text_anchor=sv.Point(x=100, y=100), text_scale=1, text_thickness=2,
                                            background_color=COLORS.colors[0], text_padding=40)
 
-        if Timer_Reset == 200:#if this is a new incident then write frames stored in frame_dict to mp4 video and store on streamlit
-            height, width, _ = annotated_frame.shape #get dimensions of the frames - in this case the shape was an odd 988 x 1740 which cv2.Videowriter doesn't seem to handle
-            #so I resize the image below to 1920, 1080 which is the closest common resolution for mp4v, and hard coded that into video_writer variable
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')# Define the codec and create the video writer
+        if Timer_Reset == 200:  # if this is a new incident then write frames stored in frame_dict to mp4 video and store on streamlit
+            #height, width, _ = annotated_frame.shape  # get dimensions of the frames - in this case the shape was an odd 988 x 1740 which cv2.Videowriter doesn't seem to handle
+            # so I resize the image below to 640, 480 which is an acceptable resolution for mp4v, and hard coded that into video_writer variable
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Define the codec and create the video writer
             fps = 20  # Adjust as needed
             output_video_path = (Base_output_video_path + str(IDX) + ".mp4")
-            video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (1920, 1080))
+            video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (640, 480))
             # Loop through the image files and write them to the video
-            for k,v in self.frame_dict.items():
-                image = cv2.resize(v,(1920,1080))#Need to resize the image to fit the resolution you have put into video_writer variable
-                video = video_writer.write(image)# Write the image to the video writer
+            for k, v in self.frame_dict.items():
+                video = video_writer.write(v)  # Write the image to the video writer
             Incident_log.append((IDX, datetime.datetime.now(), output_video_path))
             # Release the video writer
             video_writer.release()
@@ -168,7 +173,6 @@ class Main_Work_Flow:
 
 def start():
     global IDX
-    timer = 0
     start = Main_Work_Flow()
     while True:
         frame = start.Create_Frames()
