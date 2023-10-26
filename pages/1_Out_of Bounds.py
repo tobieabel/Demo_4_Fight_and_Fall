@@ -25,7 +25,7 @@ def initiate_poylgon_zones(polygons:list[np.ndarray],frame_resolution_wh:tuple[i
     return[sv.PolygonZone(polygon,frame_resolution_wh,triggering_position)for polygon in polygons]
 
 st.header("Monitoring out of Bounds Zones")
-LiveStream_OOB = st.image(st.session_state.frame, width=600)
+LiveStream_OOB = st.image(st.session_state.frame, width=640)
 st.subheader('Incident Log', divider='rainbow')
 Incident_log_table_OOB = st.dataframe(pd.DataFrame(data=st.session_state.Incident_log,columns=["Index","Timestamp","Video"]),column_config={"Video":st.column_config.LinkColumn(width="large")},hide_index=True,)
 
@@ -43,16 +43,23 @@ def start_OOB():
         frame = sv.draw_polygon(frame, st.session_state.start.zones[0], Incident_Detection.COLORS.colors[0]) #draw the out of bounds zone
         frame = st.session_state.start.box_ellipse_annotator.annotate(frame, results) #draw elipses on anyone detected in frame
         annotated_frame = frame.copy() #make copy at this point so the video frames have the polygon on but not other annotations
+
         #create supervision polygon object to use for detecting people within a zone
         zone = initiate_poylgon_zones(st.session_state.start.zones)
         detections = zone[0].trigger(results)#just taking the 0 index because I know there is only 1 zone.  Returns a boolean array of true/false for each detection as to whether its in the zone or not
 
         if np.any(detections): #check if any of the detections were in the zone(i.e. any of the boolean values returned = True
             st.session_state.Intruder = True
+            det = 1 #for rules engine we pass in the detection results, 1 means true, 0 means false
+        else:
+            det = 0
 
-        st.session_state.start.Reset_Timer(st.session_state.Intruder) #call reset timer to either decrease timer or reset it if new incident found
+        #send results to object detection rule.  return value is true is threshold passed for out of bounds (5/10 frames)
+        Out_of_bounds_Score = st.session_state.start.Call_Rules_Engine(det=det, rule_type="out_of_bounds")
 
-        if st.session_state.Intruder is True:
+        st.session_state.start.Reset_Timer(Out_of_bounds_Score) #call reset timer to either decrease timer or reset it if new incident found
+
+        if Out_of_bounds_Score is True:
             annotated_frame = cv2.copyMakeBorder(annotated_frame, top=15, bottom=15, left=15, right=15,
                                                  borderType=cv2.BORDER_CONSTANT, value=[0, 0, 255])
             annotated_frame = sv.draw_text(scene=annotated_frame, text=("INTRUDER ALERT!"),
@@ -70,7 +77,7 @@ def start_OOB():
         st.session_state.Intruder = False
 
 
-        LiveStream_OOB.image(st.session_state.frame,channels="RGB",use_column_width=True)
+        LiveStream_OOB.image(st.session_state.frame,channels="RGB",width=640)
         if st.session_state.Timer_Reset == 300:
             time.sleep(3)
         Incident_log_table_OOB.dataframe(
