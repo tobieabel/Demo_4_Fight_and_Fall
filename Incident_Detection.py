@@ -24,20 +24,20 @@ if 'Timer_Reset' not in st.session_state:
     st.session_state['Timer_Reset']= 0 #timer to control when an incident has been declared, to avoid duplicate alerts
 
 class Rules_Engine:
-    def __init__(self, maximum: int, threshold: int):#when creating the instance, pass in the how many frames are needed(threshold) our of how many frames(Maximum)
+    def __init__(self, maximum: int, threshold: int):#when creating the instance, pass in the how many frames are needed(threshold) out of how many frames(Maximum)
         self.maximum = maximum
         self.threshold = threshold
         self.score = {}#a dictionary to contain a key of the IDX number, and the value of the 0 or 1 for whether people/incidents detected
         for i in range(self.maximum):
                 self.score[i-self.maximum] = 0 #prepopulate the score dict with 0's, with the keys of negative numbers so they don't clash with th real IDX frames
 
-    def Count_frames_rule(self,det:int): #can use same count rule for both object detection and classification rules
+    def Count_frames_rule(self,det:int): #can use same count rule for object detection, classification rules and out_of_bounds rules
         self.det = det #whether the model recognised a person/incident (1) or not (0)
         #add detection to the list of detections
         self.score[st.session_state.IDX] = det
         #remove the earliest IDX
         self.score.pop(min(self.score))
-        if sum(self.score.values()) >= self.threshold:#if the values are more than the threshold (5/10 for obj detection, 3/10 for incident)
+        if sum(self.score.values()) >= self.threshold:#if the values are more than the threshold (5/10 for obj detection and Out_of_bounds, 4/10 for incident)
             return True
         else:
             return False
@@ -45,7 +45,7 @@ class Rules_Engine:
 
 
 class Main_Work_Flow:
-    def __init__(self, vid_or_cam: list[str] = ["/Users/tobieabel/Desktop/Fighting and Falling 4.mov"], models: list[str] = ['yolov8s_class_custom.pt','yolov8n_custom_peopleCounterV2.pt'],
+    def __init__(self, vid_or_cam: list[str] = ["/Users/tobieabel/Desktop/Fighting and Falling 5.mov"], models: list[str] = ['yolov8s_class_custom.pt','yolov8n_custom_peopleCounterV2.pt'],
                  zones: list[np.ndarray] = [np.array([[400,320],[150,320],[270, 120],[430, 120]])]):
         self.vid_or_cam = vid_or_cam
         self.cam_or_vid_dict = {}  # Create a dictionary to hold each camera or video source
@@ -67,9 +67,9 @@ class Main_Work_Flow:
         self.box_ellipse_annotator = sv.EllipseAnnotator(color=COLORS) #for showing elipses instead of bounding boxes
         self.trace_annotator = sv.TraceAnnotator(color=COLORS, position=sv.Position.CENTER, trace_length=100,thickness=2)
 
-        self.obj_det_rule = Rules_Engine(maximum = 10, threshold = 5)
-        self.class_rule = Rules_Engine(maximum=10, threshold=4)
-
+        self.obj_det_rule = Rules_Engine(maximum = 10, threshold = 5)#set thresholds for how often you need to detect people before rule says there are people in the scene
+        self.class_rule = Rules_Engine(maximum=10, threshold=4) #and same for classification that there is an incident.
+        self.out_of_bounds_rule = Rules_Engine(maximum=10, threshold=5) #and same for out of bounds rule on Out_of_Boudns.py
 
     def Create_Frames(self) -> np.ndarray:#need to put this in separate threads and use video generator to speed things up
         #if there are multiple videos or cameras, are you capturing frames from each and sending each to the same model?
@@ -118,7 +118,7 @@ class Main_Work_Flow:
                 if st.session_state.IDX % 5 == 0:#run every 5th frame, not every frame, to speed things up.
                     class_results = self.class_model(frame,device='mps')
                     for i in class_results:
-                        classification = (i.probs.top1)
+                        classification = (i.probs.top1)#get the highest confidence classification from the model
                         if classification == 1:#unfortunately the incident label is actually 0, but I need it to be one for my threshold rules engine to calculate properly
                             classification = 0
                         else:
@@ -149,14 +149,17 @@ class Main_Work_Flow:
         elif rule_type == "classification":
             score = self.class_rule.Count_frames_rule(det)
             return score
+        elif rule_type == "out_of_bounds":
+            score = self.out_of_bounds_rule.Count_frames_rule(det)
+            return score
         #score in this function is a true or false flag for whether we have crossed the threshold of an incident
 
     def Reset_Timer(self,Incident: bool):#function to update Timer_Reset which controls when we record videos, display red border and send frames to class model
         global Timer_Reset
-        if Incident == True and st.session_state.Timer_Reset == 0:
-            st.session_state.Timer_Reset = 300
+        if Incident == True and st.session_state.Timer_Reset == 0: #we pass in the incident flag (works same for classification and out of bounds)
+            st.session_state.Timer_Reset = 300 #if there has been an incident detected and the rest is at 0 meaning we're not counting down from a previous incident
 
-        elif st.session_state.Timer_Reset > 0:
+        elif st.session_state.Timer_Reset > 0: #otherwise reduce the reset time by 1
             st.session_state.Timer_Reset -= 1
 
     def Create_Video(self, annotated_frame):  # if this is a new incident then write frames stored in frame_dict to mp4 video and store on streamlit
@@ -201,7 +204,7 @@ class Main_Work_Flow:
 
             #annotated_frame = sv.draw_text(scene=annotated_frame, text=("Frame " + str(st.session_state.IDX)),text_anchor=sv.Point(x=50, y=20), text_scale=0.5, text_thickness=1,background_color=COLORS.colors[1], text_padding=20)
             annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)  # change the frame to RGB for Streamlit
-            LiveStream.image(annotated_frame, channels="RGB", use_column_width=True)  # display in the streamlit app
+            LiveStream.image(annotated_frame, channels="RGB", width=640)  # display in the streamlit app
             if st.session_state.Timer_Reset == 300:
                 time.sleep(3)  # leave 'creating video' message on screen for 3 seconds, just looks better for demo purposes
             Incident_log_table.dataframe(pd.DataFrame(data=st.session_state.Incident_log,columns=["Index","Timestamp","Video"]),column_config={"Video":st.column_config.LinkColumn(width="large")},hide_index=True,)#update the table in streamlit
@@ -242,7 +245,7 @@ with Container1:
 
     st.header("CCTV Footage - Camera 1")
 
-    LiveStream = st.image(st.session_state.frame, width = 600)#placeholder for video stream
+    LiveStream = st.image(st.session_state.frame, width=640)#placeholder for video stream
     st.subheader('Incident Log', divider='rainbow')
     Incident_log_table = st.dataframe(pd.DataFrame(data=st.session_state.Incident_log,columns=["Index","Timestamp","Video"]),column_config={"Video":st.column_config.LinkColumn(width="large")},hide_index=True,)
 
@@ -252,6 +255,7 @@ with Container1:
 #cost_matrix = np.nan_to_num(cost_matrix)
 
 #front end using streamlit - run in terminal with command: streamlit run /Users/tobieabel/PycharmProjects/Demo_4_Fight_and_Fall/Incident_Detection.py
+
 
 
 
